@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# ESTILOS PREMIUM GO BIG (Adaptado con sutiles tonos Agro/Premium)
+# ESTILOS PREMIUM GO BIG 
 st.markdown("""
     <style>
     .main { background-color: #0d0d0d; }
@@ -48,10 +48,16 @@ def get_csv_url_by_sheet(url, sheet_name):
     except:
         return url
 
+def limpiar_monto_numerico(valor_str):
+    try:
+        limpio = re.sub(r'[^\d.-]', '', str(valor_str))
+        return float(limpio) if limpio else 0.0
+    except:
+        return 0.0
+
 # --- SIDEBAR CONTROL ---
 meses_disponibles = obtener_meses_disponibles()
 with st.sidebar:
-    # Vinculación directa con tu archivo de logo real de la Tienda de Agro
     try:
         st.image("logo_tienda_de_agro.png", use_container_width=True)
     except:
@@ -62,20 +68,28 @@ with st.sidebar:
     st.markdown("---")
     mes_seleccionado = st.selectbox("📅 Seleccione el Mes de Reporte:", options=meses_disponibles)
 
-# --- CONEXIÓN DINÁMICA CON LA NUEVA URL VALIDADA ---
+# --- CONEXIÓN DINÁMICA CON LA URL TEXTUAL VERIFICADA ---
 url_base = "https://docs.google.com/spreadsheets/d/19E2z83hOslnCEpV7wMTHDuR7PGTj1LN91ytMf4AiYhM/"
 url_pacing = get_csv_url_by_sheet(url_base, mes_seleccionado)
 
 try:
-    # Carga cruda del documento sin asumir nombres de columnas en la lectura inicial
     df_raw = pd.read_csv(url_pacing, header=None, dtype=str).fillna('')
     
-    # Definición posicional de la fila de encabezados (Fila 3 de la hoja de cálculo)
-    idx_header = 2 
-    
-    # 1. LECTURA DEL PRESUPUESTO APROBADO
+    # 1. RADAR INTELIGENTE DE ENCABEZADO: Localiza la fila 6 de forma dinámica
+    idx_header = None
+    for i, row in df_raw.iterrows():
+        valores_fila = [str(x).lower().strip() for x in row.tolist()]
+        if any(k in valores_fila for k in ['channel', 'canal', 'campaign', 'campaña']):
+            idx_header = i
+            break
+            
+    if idx_header is None:
+        st.error(f"⚠️ Estructura de tabla (Channel/Campaign) no localizada en la pestaña '{mes_seleccionado}'.")
+        st.stop()
+
+    # 2. LECTURA LINEAL DEL PRESUPUESTO APROBADO GLOBAL (Fila 2)
     presupuesto_mensual = "$0"
-    for i in range(idx_header + 1):
+    for i in range(idx_header):
         fila = df_raw.iloc[i].astype(str).tolist()
         for j, celda in enumerate(fila):
             celda_limpia = celda.lower().strip()
@@ -86,33 +100,32 @@ try:
         if presupuesto_mensual != "$0":
             break
 
-    # 2. CAPTURA DE MATRIZ DE DATOS REALES (Alineación estricta con la captura)
-    df_datos = df_raw.iloc[idx_header + 1:].copy()
-    
-    col_idx_medio = 0  # Columna A: Medio
-    col_idx_camp = 1   # Columna B: Nombre de la campaña
-    col_idx_spend = 7  # Columna H: Inversión
-    col_idx_res = 14   # Columna O: Conversiones de la plataforma
-    col_idx_tipo = 15  # Columna P: Conversiones oficiales
-    col_idx_cpa = 17   # Columna R: CPA
-    col_idx_fecha = 18 # Columna S: Actualización Pacing
-
-    # 3. EXTRACCIÓN INVERSA DE FECHA DE ACTUALIZACIÓN
+    # 3. EXTRACCIÓN INVERSA DE FECHA DE ACTUALIZACIÓN (Columna S = índice 18)
+    col_idx_fecha = 18
     fecha_update = "N/D"
-    if len(df_datos) > 0 and len(df_raw.columns) > col_idx_fecha:
+    if len(df_raw.columns) > col_idx_fecha:
         for row_pos in range(len(df_raw) - 1, idx_header, -1):
             val_celda = str(df_raw.iloc[row_pos, col_idx_fecha]).strip()
             val_lower = val_celda.lower()
             
             if val_celda != '' and val_lower not in ['nan', 'none', '<na>', '-', 'null', 'total']:
-                if not any(k in val_lower for k in ['actualiz', 'pacing', 'fecha', 'campaign', 'nombre', 'medio']):
+                if not any(k in val_lower for k in ['actualiz', 'pacing', 'fecha', 'campaign', 'channel', 'canal']):
                     fecha_update = val_celda
                     break
 
-    # 4. CONSTRUCCIÓN ASIGNADA DEL DATAFRAME PROCESADO
+    # 4. EXTRACCIÓN Y CONSTRUCCIÓN DE MATRIZ DE DATOS (Mapeo posicional limpio)
+    df_datos = df_raw.iloc[idx_header + 1:].copy()
+    
+    col_idx_medio = 0  # Columna A: Channel / Canal
+    col_idx_camp = 1   # Columna B: Campaign
+    col_idx_spend = 7  # Columna H: Spend (COP)
+    col_idx_res = 14   # Columna O: Platform Conversions
+    col_idx_tipo = 15  # Columna P: Official Conversions
+    col_idx_cpa = 17   # Columna R: CPA
+
     df_limpio = pd.DataFrame()
+    df_limpio['Medio_Raw'] = df_datos.iloc[:, col_idx_medio].astype(str).str.strip()
     df_limpio['Campaña'] = df_datos.iloc[:, col_idx_camp].astype(str).str.strip()
-    df_limpio['Medio'] = df_datos.iloc[:, col_idx_medio].astype(str).str.strip()
     df_limpio['Gasto_Raw'] = df_datos.iloc[:, col_idx_spend].astype(str).str.strip()
     
     if len(df_datos.columns) > col_idx_tipo:
@@ -123,21 +136,25 @@ try:
     df_limpio['Resultados'] = df_datos.iloc[:, col_idx_res].astype(str).str.strip() if len(df_datos.columns) > col_idx_res else 'N/D'
     df_limpio['CPA'] = df_datos.iloc[:, col_idx_cpa].astype(str).str.strip() if len(df_datos.columns) > col_idx_cpa else 'N/D'
 
-    # 5. LIMPIEZA DE FILAS EN BLANCO Y TOTALES DE CONTROL
+    # 5. FILTRADO EXCLUSIVO DE FILAS VÁLIDAS (Ignora filas vacías y las de TOTAL de control)
     df_limpio = df_limpio[df_limpio['Campaña'] != '']
     df_limpio = df_limpio[~df_limpio['Campaña'].str.upper().str.contains('TOTAL')]
-    df_limpio = df_limpio[~df_limpio['Campaña'].str.lower().str.contains('campaign|campaña|nombre de la')]
+    df_limpio = df_limpio[~df_limpio['Campaña'].str.lower().str.contains('campaign|campaña|channel|canal')]
 
-    # Formateo y limpieza del gasto numérico
-    df_limpio['Medio'] = df_limpio['Medio'].replace(['', 'nan', 'NaN'], pd.NA).ffill().fillna('Sin Medio')
+    # Relleno inteligente hacia abajo para asociar correctamente Google y META a sus campañas
+    df_limpio['Medio_Raw'] = df_limpio['Medio_Raw'].replace(['', 'nan', 'NaN'], pd.NA)
+    df_limpio['Medio'] = df_limpio['Medio_Raw'].ffill().fillna('Sin Medio')
+
+    # Limpieza y conversión a número real de la columna de Inversión
     df_limpio['Gasto'] = df_limpio['Gasto_Raw'].str.replace(r'[^\d.-]', '', regex=True)
     df_limpio['Gasto'] = pd.to_numeric(df_limpio['Gasto'], errors='coerce').fillna(0)
 
-    # Preparación de etiquetas de gráficos
+    # 6. MÁSTER CÁLCULOS PARA LA INTERFAZ Y GRÁFICOS
+    gasto_total_calculado = df_limpio['Gasto'].sum()
+    
     resumen_medios = df_limpio.groupby('Medio')['Gasto'].sum()
     mapa_medios = {med: f"{med} (${tot:,.0f})" for med, tot in resumen_medios.items()}
     df_limpio['Medio_Labels'] = df_limpio['Medio'].map(mapa_medios).astype(str)
-    gasto_total_calculado = df_limpio['Gasto'].sum()
 
     # --- INTERFAZ VISUAL ---
     st.title(f"🌱 Dashboard Gerencial Tienda de Agro: {mes_seleccionado.title()}")

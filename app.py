@@ -2,143 +2,174 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
+import urllib.parse
+import re
 
-# CONFIGURACIÓN DE PÁGINA
+# CONFIGURACIÓN DE PÁGINA PREMIUM
 st.set_page_config(
-    page_title="Bogoapts - Dashboard de Rendimiento",
-    page_icon="logo_tienda_de_agro.png",
+    page_title="Tienda de Agro - Paid Media Dashboard",
+    page_icon="🌱",
     layout="wide"
 )
 
-# ESTILOS PREMIUM
+# ESTILOS PREMIUM GO BIG (Adaptado con sutiles tonos Agro/Premium)
 st.markdown("""
     <style>
     .main { background-color: #0d0d0d; }
     [data-testid="stMetricValue"] { font-size: 32px; color: #d6b58e !important; font-weight: 700; }
     [data-testid="stMetricLabel"] { color: #f5f5f5 !important; }
-    h1, h2, h3 { color: #ffffff; font-family: 'Segoe UI', sans-serif; font-weight: 600; }
+    h1, h2, h3 { color: #ffffff; font-family: 'Georgia', serif; }
     .stSidebar { background-color: #1a1a1a; border-right: 1px solid #333; }
     .stPlotlyChart { border: 1px solid #333; border-radius: 8px; background-color: #1a1a1a; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNCIONES DE AYUDA ---
-def get_csv_url(url):
-    return url.replace('/edit?gid=', '/export?format=csv&gid=').split('#')[0]
+# --- LÓGICA HISTÓRICA DE MESES ---
+def obtener_meses_disponibles():
+    meses_es = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+    start_year, start_month = 2026, 5
+    now = datetime.now()
+    lista = []
+    ano, mes = start_year, start_month
+    while (ano < now.year) or (ano == now.year and mes <= now.month):
+        lista.append(f"{meses_es[mes-1]} {ano}")
+        if mes == 12:
+            mes = 1
+            ano += 1
+        else:
+            mes += 1
+    return list(reversed(lista))
 
-def encontrar_columna(lista_cols, palabras_clave):
-    for col in lista_cols:
-        if all(p.lower() in str(col).lower() for p in palabras_clave):
-            return col
-    return None
+def get_csv_url_by_sheet(url, sheet_name):
+    try:
+        id_publicacion = url.split("/d/")[1].split("/")[0]
+        sheet_enc = urllib.parse.quote(sheet_name)
+        return f"https://docs.google.com/spreadsheets/d/{id_publicacion}/gviz/tq?tqx=out:csv&sheet={sheet_enc}"
+    except:
+        return url
 
-# --- BARRA LATERAL ---
+# --- SIDEBAR CONTROL ---
+meses_disponibles = obtener_meses_disponibles()
 with st.sidebar:
-    st.image("logo_tienda_de_agro.png", use_container_width=True)
+    # Vinculación directa con tu archivo de logo real de la Tienda de Agro
+    try:
+        st.image("logo_tienda_de_agro.png", use_container_width=True)
+    except:
+        st.caption("🌱 *Sube 'logo_tienda_de_agro.png' a GitHub para activar el logo personalizado*")
+        
+    st.markdown("## 📊 Control de Paid Media")
+    st.write("Propiedad: **Tienda de Agro**")
     st.markdown("---")
-    st.markdown("### Control de Paid Media")
-    st.write("Cliente: **Tienda De Agro**")
-    st.info(f"Día del Mes: {datetime.now().day}")
+    mes_seleccionado = st.selectbox("📅 Seleccione el Mes de Reporte:", options=meses_disponibles)
 
-# --- URL DEL CLIENTE ---
-url_pacing = "https://docs.google.com/spreadsheets/d/19E2z83hOslnCEpV7wMTHDuR7PGTj1LN91ytMf4AiYhM/edit?gid=0#gid=0"
+# --- CONEXIÓN DINÁMICA CON LA NUEVA URL VALIDADA ---
+url_base = "https://docs.google.com/spreadsheets/d/19E2z83hOslnCEpV7wMTHDuR7PGTj1LN91ytMf4AiYhM/"
+url_pacing = get_csv_url_by_sheet(url_base, mes_seleccionado)
 
 try:
-    # 1. CARGA DE CABECERA Y PRESUPUESTO
-    df_header = pd.read_csv(get_csv_url(url_pacing), nrows=5, header=None)
-    presupuesto_mensual = df_header.iloc[1, 2] 
-
-    # 2. CARGA DE DATOS DE CAMPAÑAS
-    df_pacing = pd.read_csv(get_csv_url(url_pacing), skiprows=5)
-    df_pacing.columns = [str(c).strip() for c in df_pacing.columns]
-
-    # Identificación de columnas
-    col_medio = 'Channel' if 'Channel' in df_pacing.columns else df_pacing.columns[0]
-    col_spend = 'Spend (COP)'
-    col_tipo = encontrar_columna(df_pacing.columns, ['Official', 'Conversions'])
+    # Carga cruda del documento sin asumir nombres de columnas en la lectura inicial
+    df_raw = pd.read_csv(url_pacing, header=None, dtype=str).fillna('')
     
-    # 3. FILTRADO ESTRICTO
-    # Excluimos filas que digan TOTAL y filas repetidas de subtítulos (ej. si dice "Campaign")
-    df_campañas = df_pacing[
-        (df_pacing['Campaign'].notna()) & 
-        (~df_pacing['Campaign'].str.contains('TOTAL', na=False, case=False)) &
-        (df_pacing['Campaign'] != 'Campaign')
-    ].copy()
-
-    # --- LA MAGIA PARA LAS CELDAS COMBINADAS ---
-    # Convertimos strings vacíos en verdaderos valores Nulos, y rellenamos hacia abajo (forward fill)
-    df_campañas[col_medio] = df_campañas[col_medio].replace(['', ' ', 'nan', 'NaN'], pd.NA).ffill()
-
-    # Limpieza financiera
-    df_campañas[col_spend] = pd.to_numeric(
-        df_campañas[col_spend].astype(str).str.replace(r'[$,]', '', regex=True), 
-        errors='coerce'
-    ).fillna(0)
-
-    # 4. CÁLCULO DE TOTALES PARA ETIQUETAS
-    resumen_plataformas = df_campañas.groupby(col_medio)[col_spend].sum()
-    mapa_nombres = {plat: f"{plat} (${tot:,.0f})" for plat, tot in resumen_plataformas.items()}
-    df_campañas['Medio_Labels'] = df_campañas[col_medio].map(mapa_nombres)
+    # Definición posicional de la fila de encabezados (Fila 3 de la hoja de cálculo)
+    idx_header = 2 
     
-    gasto_total_calculado = df_campañas[col_spend].sum()
+    # 1. LECTURA DEL PRESUPUESTO APROBADO
+    presupuesto_mensual = "$0"
+    for i in range(idx_header + 1):
+        fila = df_raw.iloc[i].astype(str).tolist()
+        for j, celda in enumerate(fila):
+            celda_limpia = celda.lower().strip()
+            if 'approved' in celda_limpia or 'aprobado' in celda_limpia:
+                if j + 1 < len(fila) and fila[j+1].strip() not in ['', 'nan', '<na>']:
+                    presupuesto_mensual = fila[j+1].strip()
+                break
+        if presupuesto_mensual != "$0":
+            break
+
+    # 2. CAPTURA DE MATRIZ DE DATOS REALES (Alineación estricta con la captura)
+    df_datos = df_raw.iloc[idx_header + 1:].copy()
     
-    col_fecha = encontrar_columna(df_pacing.columns, ['Actualizacion', 'Pacing']) or 'Actualización Pacing'
-    fecha_update = df_pacing[col_fecha].dropna().iloc[-1]
+    col_idx_medio = 0  # Columna A: Medio
+    col_idx_camp = 1   # Columna B: Nombre de la campaña
+    col_idx_spend = 7  # Columna H: Inversión
+    col_idx_res = 14   # Columna O: Conversiones de la plataforma
+    col_idx_tipo = 15  # Columna P: Conversiones oficiales
+    col_idx_cpa = 17   # Columna R: CPA
+    col_idx_fecha = 18 # Columna S: Actualización Pacing
+
+    # 3. EXTRACCIÓN INVERSA DE FECHA DE ACTUALIZACIÓN
+    fecha_update = "N/D"
+    if len(df_datos) > 0 and len(df_raw.columns) > col_idx_fecha:
+        for row_pos in range(len(df_raw) - 1, idx_header, -1):
+            val_celda = str(df_raw.iloc[row_pos, col_idx_fecha]).strip()
+            val_lower = val_celda.lower()
+            
+            if val_celda != '' and val_lower not in ['nan', 'none', '<na>', '-', 'null', 'total']:
+                if not any(k in val_lower for k in ['actualiz', 'pacing', 'fecha', 'campaign', 'nombre', 'medio']):
+                    fecha_update = val_celda
+                    break
+
+    # 4. CONSTRUCCIÓN ASIGNADA DEL DATAFRAME PROCESADO
+    df_limpio = pd.DataFrame()
+    df_limpio['Campaña'] = df_datos.iloc[:, col_idx_camp].astype(str).str.strip()
+    df_limpio['Medio'] = df_datos.iloc[:, col_idx_medio].astype(str).str.strip()
+    df_limpio['Gasto_Raw'] = df_datos.iloc[:, col_idx_spend].astype(str).str.strip()
     
-    # --- 5. INTERFAZ ---
-    st.title("📊 Dashboard Gerencial de Rendimiento")
+    if len(df_datos.columns) > col_idx_tipo:
+        df_limpio['Objetivo'] = df_datos.iloc[:, col_idx_tipo].astype(str).str.strip().replace('', 'Sin Objetivo')
+    else:
+        df_limpio['Objetivo'] = 'General'
+        
+    df_limpio['Resultados'] = df_datos.iloc[:, col_idx_res].astype(str).str.strip() if len(df_datos.columns) > col_idx_res else 'N/D'
+    df_limpio['CPA'] = df_datos.iloc[:, col_idx_cpa].astype(str).str.strip() if len(df_datos.columns) > col_idx_cpa else 'N/D'
+
+    # 5. LIMPIEZA DE FILAS EN BLANCO Y TOTALES DE CONTROL
+    df_limpio = df_limpio[df_limpio['Campaña'] != '']
+    df_limpio = df_limpio[~df_limpio['Campaña'].str.upper().str.contains('TOTAL')]
+    df_limpio = df_limpio[~df_limpio['Campaña'].str.lower().str.contains('campaign|campaña|nombre de la')]
+
+    # Formateo y limpieza del gasto numérico
+    df_limpio['Medio'] = df_limpio['Medio'].replace(['', 'nan', 'NaN'], pd.NA).ffill().fillna('Sin Medio')
+    df_limpio['Gasto'] = df_limpio['Gasto_Raw'].str.replace(r'[^\d.-]', '', regex=True)
+    df_limpio['Gasto'] = pd.to_numeric(df_limpio['Gasto'], errors='coerce').fillna(0)
+
+    # Preparación de etiquetas de gráficos
+    resumen_medios = df_limpio.groupby('Medio')['Gasto'].sum()
+    mapa_medios = {med: f"{med} (${tot:,.0f})" for med, tot in resumen_medios.items()}
+    df_limpio['Medio_Labels'] = df_limpio['Medio'].map(mapa_medios).astype(str)
+    gasto_total_calculado = df_limpio['Gasto'].sum()
+
+    # --- INTERFAZ VISUAL ---
+    st.title(f"🌱 Dashboard Gerencial Tienda de Agro: {mes_seleccionado.title()}")
     
     c1, c2, c3 = st.columns(3)
-    with c1: 
-        st.metric("Presupuesto Mensual", f"{presupuesto_mensual}")
-    with c2: 
-        st.metric("Inversión Ejecutada", f"${gasto_total_calculado:,.0f}")
-    with c3: 
-        st.metric("Día de Medición", f"{datetime.now().day}")
+    with c1: st.metric("Presupuesto Mensual", f"{presupuesto_mensual}")
+    with c2: st.metric("Inversión Ejecutada", f"${gasto_total_calculado:,.0f}")
+    with c3:
+        if mes_seleccionado == meses_disponibles[0]:
+            st.metric("Día de Medición", f"Día {datetime.now().day}")
+        else:
+            st.metric("Estado del Mes", "Cerrado")
 
-    st.success(f"✅ Sincronizado correctamente con la base de datos: {fecha_update}")
+    st.success(f"✅ Sincronización exitosa con la pestaña [{mes_seleccionado}] | Último registro: {fecha_update}")
     st.divider()
 
-    # --- 6. TREEMAP ---
-    st.header("📈 Distribución por Canal y Objetivo")
-    df_plot = df_campañas[df_campañas[col_spend] > 0]
-    
+    # --- VISUALIZACIÓN TREEMAP ---
+    st.header("📊 Distribución por Canal y Objetivo")
+    df_plot = df_limpio[df_limpio['Gasto'] > 0]
     if not df_plot.empty:
-        fig = px.treemap(
-            df_plot, 
-            path=['Medio_Labels', col_tipo], 
-            values=col_spend, 
-            color=col_spend,
-            color_continuous_scale=['#d6b58e', '#5b3f8e'] 
-        )
-        
-        fig.update_traces(
-            texttemplate="<b>%{label}</b><br>$%{value:,.0f}", 
-            hovertemplate="<b>%{label}</b><br>Inversión: $%{value:,.0f}<extra></extra>", 
-            textposition="middle center"
-        )
-        
-        fig.update_layout(
-            margin=dict(t=10, l=10, r=10, b=10), 
-            paper_bgcolor='rgba(0,0,0,0)', 
-            plot_bgcolor='rgba(0,0,0,0)', 
-            font_color="white"
-        )
+        fig = px.treemap(df_plot, path=['Medio_Labels', 'Objetivo'], values='Gasto', color='Gasto', color_continuous_scale=['#b2d8d8', '#2e5b4b'])
+        fig.update_traces(texttemplate="<b>%{label}</b><br>$%{value:,.0f}", hovertemplate="<b>%{label}</b><br>Inversión: $%{value:,.0f}<extra></extra>", textposition="middle center")
+        fig.update_layout(margin=dict(t=10, l=10, r=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color="white")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("No se detectan datos numéricos superiores a $0 en la columna de gasto para poder graficar.")
+        st.warning("No se detectan datos de gasto mayores a $0 para graficar en este periodo.")
 
-    # --- 7. TABLA DE DATOS ---
-    with st.expander("📝 Ver desglose detallado de campañas"):
-        col_res = encontrar_columna(df_campañas.columns, ['Platform', 'Conversions'])
-        col_cpa = encontrar_columna(df_campañas.columns, ['CPA'])
-        
-        df_display = df_campañas[[col_medio, 'Campaign', col_tipo, col_res, col_cpa]].rename(
-            columns={col_medio: 'Medio', 'Campaign': 'Campaña', col_tipo: 'Objetivo', col_res: 'Resultados', col_cpa: 'CPA'}
-        )
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
+    # --- TABLA CONTROL ---
+    with st.expander("📝 Detalle General de Campañas"):
+        st.dataframe(df_limpio[['Medio', 'Campaña', 'Objetivo', 'Resultados', 'CPA']].sort_values(by='Medio'), use_container_width=True, hide_index=True)
 
 except Exception as e:
-    st.error(f"Error técnico al procesar el archivo del cliente: {e}")
+    st.error(f"Error detectado en el procesamiento de datos: {e}")
 
-st.caption("Bogoapts Dashboard | Desarrollado por goBIG Consulting")
+st.caption(f"Tienda de Agro Analytics | Strategic Analytics by goBIG")
